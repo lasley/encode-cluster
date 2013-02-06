@@ -6,7 +6,7 @@ from custom_socket import socket_functions
 
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
 
-class encode_cluster_server( transcode ):
+class encode_cluster_server(transcode):
     SELF_THREADS = 1
     def __init__(self, indir, outdir):
         super( encode_cluster_server, self).__init__(indir, outdir)
