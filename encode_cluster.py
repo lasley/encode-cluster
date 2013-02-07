@@ -95,7 +95,7 @@ class encode_cluster_server(transcode):
                             time.sleep(10)  #<   Wait a bit
                             
                         if child_took_it: #< @todo get rid of this...
-                            break
+                            continue
 
                         self.worker_threads[file_name] = (threading.Thread(target=thread,name=file_name,args=(root,new_root,file_name,extension,transcode_settings)))
                         self.worker_threads[file_name].daemon = True
