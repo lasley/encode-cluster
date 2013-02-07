@@ -1,31 +1,29 @@
 #!/usr/bin/env python
 import json
-import logging
-from batch_transcode import transcode
+from batch_transcode.transcode import *
 from custom_socket import socket_functions
 
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
 
 class encode_cluster_server(transcode):
     SELF_THREADS = 1
-    def __init__(self, indir, outdir):
-        super( encode_cluster_server, self).__init__(indir, outdir)
+    def __init__(self, outdir, indir):
+        super( encode_cluster_server, self).__init__(outdir)
         self.client_threads = []
         self.thread_map = {}
         SOCKET_ARGS = {
-
-
-
+            'transcode_done':self.transcode_done
         }
-        self.server = socket_functions.custom_server(SOCKET_ARGS,['get_busy',])
-        self.server.run()
+        self.server = socket_functions.custom_server(SOCKET_ARGS,['transcode_done',])
+        self.server.start()
+        self.encode_directory(indir)
     
     def transcode_done(self, output):
         logging.debug(str(output))
         self.client_threads[output['client_id']] = False
         # @todo More of this
     
-    def encode_directory(self,inpath):
+    def encode_directory(self,inpath=None):
         '''
             Encodes an entire directory...cluster style!
             self.SELF_THREADS for self too
@@ -47,6 +45,7 @@ class encode_cluster_server(transcode):
                     'transcode_settings':transcode_settings,
                     'cluster_id': clustered[1],
                 }
+                logging.debug('Sending %s' % repr(cmd))
                 self.server.send_str(json.dumps(cmd),[clustered[0]])
                 return True
             else:
@@ -86,9 +85,9 @@ class encode_cluster_server(transcode):
                                         self.client_threads.append( True )
                                         child_took_it = True
                                         
-                            if thread(root,new_root,file_name,extension,transcode_settings,client):
-                                self.client_threads[self.thread_map[client]] = True
-                                child_took_it = True
+                                if thread(root,new_root,file_name,extension,transcode_settings,[client,len(self.client_threads)]):
+                                    self.client_threads[self.thread_map[client]] = True
+                                    child_took_it = True
 
                             if child_took_it: #< @todo get rid of this...
                                 break
@@ -102,19 +101,29 @@ class encode_cluster_server(transcode):
                         self.worker_threads[file_name].daemon = True
                         self.worker_threads[file_name].start()
 
-class encode_cluster_client( transcode ):
+class encode_cluster_client(transcode):
     
-    def __init__(self, proxy_host=None, proxy_port=8080):
+    def __init__(self, outdir):
         ##  Init
-        ##  @param  Str proxy_host  SOCKS proxy hsot
+        ##  @param  Str proxy_host  SOCKS proxy host
         ##  @param  Int proxy_port  SOCKS proxy port
+        super( encode_cluster_client, self).__init__(outdir)
         SOCKET_ARGS = {
-            
+            'encode_it':self.encode_it
         }
         self.socket = socket_functions.custom_client(SOCKET_ARGS)
-        self.recv_thread = worker_thread(self.socket.recv)
-        self.recv_thread.finished.connect(self.thread_finish)
-        self.recv_thread.start()
+        self.socket.recv()
+        
+    def __del__(self):
+        self.kill_server()
+        self.recv_thread.stop()
+        
+    def kill_server(self):
+        logging.debug('Exiting Server..')
+        for client in self.clients.values(): #< Kill connections
+            client.close()
+        self.server.close()
+        exit(0)
         
     def encode_it(self,options):
         output = {
