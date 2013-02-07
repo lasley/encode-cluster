@@ -84,6 +84,7 @@ class encode_cluster_server(transcode):
                                         self.thread_map[client] = len(self.client_threads)
                                         self.client_threads.append( True )
                                         child_took_it = True
+                                        break
                                         
                                 if thread(root,new_root,file_name,extension,transcode_settings,[client,len(self.client_threads)]):
                                     self.client_threads[self.thread_map[client]] = True
