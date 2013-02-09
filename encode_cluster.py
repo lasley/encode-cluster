@@ -2,11 +2,12 @@
 import json
 from batch_transcode.transcode import *
 from custom_socket import socket_functions
+from settings import IN_DIR, OUT_DIR
 
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
 
 class encode_cluster_server(transcode):
-    SELF_THREADS = 1
+    SELF_THREADS = 0
     def __init__(self, outdir, indir):
         super( encode_cluster_server, self).__init__(outdir)
         self.client_threads = []
@@ -23,6 +24,18 @@ class encode_cluster_server(transcode):
         self.client_threads[output['client_id']] = False
         # @todo More of this
     
+    def client_transcode(self, old_file, new_file, transcode_settings):
+        cmd = {
+            'cmd'   :   'encode_it', #< @todo use transcode; this creates a filesystem structure dependency
+            'old_file': old_file.replace(IN_DIR,''),
+            'new_file': new_file.replace(OUT_DIR,''),
+            'transcode_settings':transcode_settings,
+            'cluster_id': clustered[1],
+        }
+        logging.debug('Sending %s' % repr(cmd))
+        self.server.send_str(json.dumps(cmd),[clustered[0]])
+        return True
+    
     def encode_directory(self,inpath=None):
         '''
             Encodes an entire directory...cluster style!
@@ -38,16 +51,7 @@ class encode_cluster_server(transcode):
             old_file = os.path.join(root,'%s%s'%(file_name,extension))
             new_file = os.path.join(new_root, file_name, extension)
             if clustered:
-                cmd = {
-                    'cmd'   :   'encode_it', #< @todo use transcode; this creates a filesystem structure dependency
-                    'old_file': old_file,
-                    'new_file': new_file,
-                    'transcode_settings':transcode_settings,
-                    'cluster_id': clustered[1],
-                }
-                logging.debug('Sending %s' % repr(cmd))
-                self.server.send_str(json.dumps(cmd),[clustered[0]])
-                return True
+                self.client_transcode(old_file, new_file, transcode_settings)
             else:
                 self.new_files.append( self.encode_it(old_file, new_file,transcode_settings) )
                 del self.worker_threads[file_name]
@@ -93,7 +97,7 @@ class encode_cluster_server(transcode):
                             if child_took_it: #< @todo get rid of this...
                                 break
                             
-                            time.sleep(10)  #<   Wait a bit
+                            time.sleep(1)  #<   Wait a bit
                             
                         if child_took_it: #< @todo get rid of this...
                             continue
