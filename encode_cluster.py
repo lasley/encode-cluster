@@ -8,6 +8,12 @@ logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
 
 class encode_cluster_server(transcode):
     SELF_THREADS = 0
+    DRY_RUNS        =   {
+        'demux' : False,
+        'transcode' : False,
+        'remux' : False,
+        'dont_delete' : False,
+    }
     def __init__(self, outdir, indir):
         super( encode_cluster_server, self).__init__(outdir)
         self.client_threads = []
@@ -47,32 +53,33 @@ class encode_cluster_server(transcode):
         '''
         self.new_files = []
         self.worker_threads = {}
-        def thread(root,new_root,file_name,extension,transcode_settings,clustered=False):
-            old_file = os.path.join(root,'%s%s'%(file_name,extension))
+        def thread(root, new_root, file_name, extension, transcode_settings, clustered=False):
+            old_file = os.path.join(root, '%s%s' % (file_name, extension))
             new_file = os.path.join(new_root, file_name, extension)
             if clustered:
                 self.client_transcode(old_file, new_file, transcode_settings)
             else:
-                self.new_files.append( self.encode_it(old_file, new_file,transcode_settings) )
+                self.new_files.append(self.encode_it(old_file, new_file, transcode_settings) )
                 del self.worker_threads[file_name]
-                os.unlink(os.path.join(root,file_name,extension))
-                logging.debug('DELETED: %s'%os.path.join(root,file_name,extension))
+                if True not in self.DRY_RUNS:
+                    os.unlink(old_file)
+                logging.debug('DELETED: %s' % old_file)
         for root, dirs, files in os.walk(inpath):
             dirs.sort()
             files.sort()
             if '.Apple' not in root:
-                new_root = os.path.join(self.finished_dir,root.replace(inpath,''))
+                new_root = os.path.join(self.finished_dir, root.replace(inpath, ''))
                 if not os.path.isdir(new_root):
                     os.mkdir(new_root)
                 try:
-                    with open(os.path.join(root,self.settings_file)) as f: pass
-                    transcode_settings = self.parse_video_settings(os.path.join(root,self.settings_file))
+                    with open(os.path.join(root, self.settings_file)) as f: pass
+                    transcode_settings = self.parse_video_settings(os.path.join(root, self.settings_file))
                     print transcode_settings
                 except IOError:
                     transcode_settings = {}
 
                 for file_name in files:
-                    file_name,extension = os.path.splitext(file_name)
+                    file_name, extension = os.path.splitext(file_name)
                     child_took_it = False
                     if extension in self.vid_exts:
                         while len(self.worker_threads) >= self.SELF_THREADS:
