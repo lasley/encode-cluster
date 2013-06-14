@@ -55,9 +55,8 @@ class encode_cluster_server(transcode):
             else:
                 self.new_files.append( self.encode_it(old_file, new_file,transcode_settings) )
                 del self.worker_threads[file_name]
-                if True not in self.dry_runs:   #<  Delete the file if not testing or specified
-                    os.unlink(os.path.join(root,file_name,extension))
-                    logging.debug('DELETED: %s'%os.path.join(root,file_name,extension))
+                os.unlink(os.path.join(root,file_name,extension))
+                logging.debug('DELETED: %s'%os.path.join(root,file_name,extension))
         for root, dirs, files in os.walk(inpath):
             dirs.sort()
             files.sort()
