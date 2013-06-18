@@ -7,39 +7,100 @@ from settings import IN_DIR, OUT_DIR
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
 
 class encode_cluster_server(transcode):
-    SELF_THREADS = 0
-    DRY_RUNS        =   {
-        'demux' : False,
-        'transcode' : False,
-        'remux' : False,
-        'dont_delete' : False,
-    }
     def __init__(self, outdir, indir):
         super( encode_cluster_server, self).__init__(outdir)
         self.client_threads = []
-        self.thread_map = {}
+        self.thread_map, self.client_files = {}, {}
         SOCKET_ARGS = {
             'transcode_done':self.transcode_done
         }
-        self.server = socket_functions.custom_server(SOCKET_ARGS,['transcode_done',])
+        self.server = socket_functions.custom_server(SOCKET_ARGS,['transcode_done'])
         self.server.start()
         self.encode_directory(indir)
+        self.new_files = []
     
     def transcode_done(self, output):
-        logging.debug(str(output))
-        self.client_threads[output['client_id']] = False
-        # @todo More of this
+        logging.debug('Transcode_Done %s'%str(output))
+        client_files = self.client_files[output['cluster_id']]
+        client_files['demuxed'][client_files['waiting_transcode']] = output['new_file']
+        client_files['cleanup_files'].append(client_files['demuxed'][client_files['waiting_transcode']])
+        logging.debug('Transcoded %s' % self.client_files[output['cluster_id']]['demuxed'][client_files['waiting_transcode']])
+        
+        duped = self.compare_tracks(self.client_files[output['cluster_id']]['demuxed'])
+        track_order = self.choose_track_order(client_files['media_info'])
+        logging.debug('Track Order Chosen!')
+        
+        try:
+            new_file = transcode.remux(self.client_files[output['cluster_id']]['demuxed']
+                                       ,client_files['media_info'],
+                                       client_files['new_file'],duped,track_order,
+                                       dry_run=self.dry_runs['remux'])
+            self.new_files.append(new_file)
+            
+            #   Delete leftover files
+            self._client_file_cleanup(output['cluster_id'])
+            logging.debug('New File Success %s' % client_files['new_file'])
+            try:
+                self.client_threads[output['cluster_id']] = False
+            except (IndexError, KeyError):
+                logging.debug(repr(self.client_threads))
+                logging.debug('Cluster %s not found in clusters %s' % (
+                    output['cluster_id'], repr(self.client_threads)))
+            
+        except Exception as e:
+            logging.error(repr(e))
+            #   Implement #20
+            fh = open(self.log_file, 'a')
+            fh.write( repr(e) + "\n" ) 
+            fh.close()
+
+    def client_transcode(self, old_file, new_file, transcode_settings,cluster_info):
+        self._client_file_cleanup(cluster_info[1])
+        self.client_files[cluster_info[1]] = { 'media_info': self.media_info(old_file),
+                                                'new_file' : new_file,
+                                                'cleanup_files':[old_file] }
+        media_info = self.client_files[cluster_info[1]]['media_info']
+        self.client_files[cluster_info[1]]['demuxed'] = self.demux(
+            old_file, media_info, self.encode_dir, dry_run=self.dry_runs['demux'])
+        self.client_files[cluster_info[1]]['cleanup_files'].extend(
+            self.client_files[cluster_info[1]]['demuxed'])
+        #media_info['tracks'][i+1]   :   mux_files[i]
+        
+        if len(media_info['id_maps']['Video']) > 1:
+            raise EnvironmentError('>1 Video Track Support Not Implemented') # <@todo #3
+        for vid_id in media_info['id_maps']['Video']:
+            self.client_files[cluster_info[1]]['waiting_transcode'] = vid_id-1 
+            cmd = {
+                'cmd'   :   'transcode', 
+                'old_file':old_file,
+                'new_file':os.path.join(
+                                    self.encode_dir,
+                                    u'%s.%s'%(os.path.basename(old_file),
+                                              self.transcode_settings['container'])
+                                ),
+                'media_info':media_info['tracks'][vid_id],
+                'new_settings':transcode_settings,
+                'dry_run':self.dry_runs['transcode'],
+                'cluster_id': cluster_info[1],
+            }
+            logging.debug('Sending %s' % repr(cmd))
+            self.server.send_str(json.dumps(cmd),[cluster_info[0]])
+            return True #< @todo #3
     
-    def client_transcode(self, old_file, new_file, transcode_settings):
-        cmd = {
-            'cmd'   :   'encode_it', #< @todo use transcode; this creates a filesystem structure dependency
-            'old_file': old_file.replace(IN_DIR,''),
-            'new_file': new_file.replace(OUT_DIR,''),
-            'transcode_settings':transcode_settings,
-            'cluster_id': clustered[1],
-        }
-        logging.debug('Sending %s' % repr(cmd))
-        self.server.send_str(json.dumps(cmd),[clustered[0]])
+    def _client_file_cleanup(self,cluster_id):
+        leftovers = []
+        try:
+            for i in xrange(0, len(self.client_files[cluster_id]['cleanup_files'])):
+                cleanup_file = self.client_files[cluster_id]['cleanup_files'].pop(0)
+                try:
+                    logging.debug( 'Removing %s' % cleanup_file)
+                    os.remove(cleanup_file)
+                except OSError:
+                    logging.error('Could not delete %s' % cleanup_file)
+                    leftovers.append(cleanup_file)
+            self.client_files[cluster_id]['cleanup_files'] = leftovers
+        except KeyError: #< No cleanup files
+            pass
         return True
     
     def encode_directory(self,inpath=None):
@@ -51,66 +112,62 @@ class encode_cluster_server(transcode):
             
             @return List    Newly created files
         '''
-        self.new_files = []
-        self.worker_threads = {}
-        def thread(root, new_root, file_name, extension, transcode_settings, clustered=False):
+
+        def thread(root, new_root, file_name, extension,
+                   transcode_settings, clustered=False):
             old_file = os.path.join(root, '%s%s' % (file_name, extension))
-            new_file = os.path.join(new_root, file_name, extension)
-            if clustered:
-                self.client_transcode(old_file, new_file, transcode_settings)
-            else:
-                self.new_files.append(self.encode_it(old_file, new_file, transcode_settings))
-                del self.worker_threads[file_name]
-                if True not in self.DRY_RUNS: #< ALWAYS LOOK FOR ANY TRUE!
-                    if os.unlink(old_file):
-                        logging.debug('DELETED: %s' % old_file)
+            new_file = os.path.join(new_root, '%s%s' % (file_name, extension))
+            thread = threading.Thread(target=self.client_transcode,
+                                      name=clustered[1],
+                                      args=(old_file, new_file,
+                                            transcode_settings, clustered))
+            thread.daemon = True
+            thread.start()
+            return True
+                    
         for root, dirs, files in os.walk(inpath):
+            
             dirs.sort()
             files.sort()
+            
             if '.Apple' not in root:
-                new_root = os.path.join(self.finished_dir, root.replace(inpath, ''))
+                new_root = os.path.join(self.finished_dir,root.replace(inpath,''))
                 if not os.path.isdir(new_root):
                     os.mkdir(new_root)
                 try:
                     with open(os.path.join(root, self.settings_file)) as f: pass
-                    transcode_settings = self.parse_video_settings(os.path.join(root, self.settings_file))
+                    transcode_settings = self.parse_video_settings(
+                        os.path.join(root, self.settings_file))
                     print transcode_settings
                 except IOError:
                     transcode_settings = {}
 
                 for file_name in files:
-                    file_name, extension = os.path.splitext(file_name)
+                    file_name,extension = os.path.splitext(file_name)
                     child_took_it = False
                     if extension in self.vid_exts:
-                        while len(self.worker_threads) >= self.SELF_THREADS:
-                            
+                        while not child_took_it:
                             #   Implement Socket Encoding...
                             for client in self.server.clients.values():
                                 try:
                                     if self.client_threads[self.thread_map[client]]:
-                                        break
+                                        continue
                                 except (KeyError, IndexError):
-                                    if thread(root,new_root,file_name,extension,transcode_settings,[client,len(self.client_threads)]):
+                                    if thread(root, new_root, file_name, extension,
+                                              transcode_settings, [client,len(self.client_threads)]):
                                         self.thread_map[client] = len(self.client_threads)
                                         self.client_threads.append( True )
                                         child_took_it = True
                                         break
                                         
-                                if thread(root,new_root,file_name,extension,transcode_settings,[client,len(self.client_threads)]):
+                                if thread(root, new_root, file_name, extension,
+                                          transcode_settings, [client,self.thread_map[client]]):
                                     self.client_threads[self.thread_map[client]] = True
                                     child_took_it = True
+                                    break
 
-                            if child_took_it: #< @todo get rid of this...
-                                break
-                            
-                            time.sleep(1)  #<   Wait a bit
-                            
-                        if child_took_it: #< @todo get rid of this...
-                            continue
-
-                        self.worker_threads[file_name] = (threading.Thread(target=thread,name=file_name,args=(root,new_root,file_name,extension,transcode_settings)))
-                        self.worker_threads[file_name].daemon = True
-                        self.worker_threads[file_name].start()
+                            time.sleep(int(not child_took_it))  #<   Wait a bit if no child picked it up
+    
 
 class encode_cluster_client(transcode):
     
@@ -120,9 +177,10 @@ class encode_cluster_client(transcode):
         ##  @param  Int proxy_port  SOCKS proxy port
         super( encode_cluster_client, self).__init__(outdir)
         SOCKET_ARGS = {
-            'encode_it':self.encode_it
+            'encode_it':self.encode_it,
+            'transcode':self.transcode,
         }
-        self.socket = socket_functions.custom_client(SOCKET_ARGS)
+        self.socket = socket_functions.custom_client(SOCKET_ARGS,['encode_it'])
         self.socket.recv()
         
     def __del__(self):
@@ -139,6 +197,24 @@ class encode_cluster_client(transcode):
     def encode_it(self,options):
         output = {
             'cmd' : 'transcode_done',
-            'new_file': super(encode_cluster_client, self).encode_it(options['old_file'],options['new_file'],options['transcode_settings'])
+            'new_file': super(encode_cluster_client, self).encode_it(
+                os.path.join(IN_DIR,options['old_file']),
+                os.path.join(self.finished_dir,options['new_file']),
+                options['transcode_settings']),
+            'cluster_id':options['cluster_id']
         }
+        print 'Done'
+        print output
         self.socket.send_str(json.dumps(output))
+        
+    def transcode(self,options):
+        cluster_id = options['cluster_id']
+        del options['cluster_id'], options['cmd']
+        output = {
+            'cmd' : 'transcode_done',
+            'new_file': super(encode_cluster_client, self).transcode(**options),
+            'cluster_id':cluster_id
+        }
+        logging.debug( output )
+        self.socket.send_str(json.dumps(output))
+
