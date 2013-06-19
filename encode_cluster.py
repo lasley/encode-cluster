@@ -23,8 +23,12 @@ class encode_cluster_server(transcode):
         self.encode_directory(indir)
         self.new_files = []
     
+    def release_client(self, cluster_id):
+        self.client_threads[cluster_id] = False
+
     def transcode_done(self, output):
         logging.debug('Transcode_Done %s'%str(output))
+        self.release_client(output['cluster_id'])
         client_files = self.client_files[output['cluster_id']]
         client_files['demuxed'][client_files['waiting_transcode']] = output['new_file']
         client_files['cleanup_files'].append(client_files['demuxed'][client_files['waiting_transcode']])
@@ -34,7 +38,7 @@ class encode_cluster_server(transcode):
         track_order = self.choose_track_order(client_files['media_info'])
         logging.debug('Track Order Chosen!')
         
-        try:
+        try:        
             new_file = transcode.remux(self.client_files[output['cluster_id']]['demuxed']
                                        ,client_files['media_info'],
                                        client_files['new_file'],duped,track_order,
@@ -44,53 +48,65 @@ class encode_cluster_server(transcode):
             #   Delete leftover files
             self._client_file_cleanup(output['cluster_id'])
             logging.debug('New File Success %s' % client_files['new_file'])
-            try:
-                self.client_threads[output['cluster_id']] = False
-            except (IndexError, KeyError):
-                logging.debug(repr(self.client_threads))
-                logging.debug('Cluster %s not found in clusters %s' % (
-                    output['cluster_id'], repr(self.client_threads)))
             
         except Exception as e:
             logging.error(repr(e))
             #   Implement #20
             fh = open(self.log_file, 'a')
-            fh.write( repr(e) + "\n" ) 
+            fh.write( repr(e) + ' - ' + repr(output) + ' - ' + repr(client_files) + "\n\n" ) 
             fh.close()
+            
+        try:
+            self.client_threads[output['cluster_id']] = False
+        except (IndexError, KeyError):
+            logging.debug(repr(self.client_threads))
+            logging.debug('Cluster %s not found in clusters %s' % (
+                output['cluster_id'], repr(self.client_threads)))
 
     def client_transcode(self, old_file, new_file, transcode_settings,cluster_info):
-        self._client_file_cleanup(cluster_info[1])
-        self.client_files[cluster_info[1]] = { 'media_info': self.media_info(old_file),
-                                                'new_file' : new_file,
-                                                'cleanup_files':[old_file] }
-        media_info = self.client_files[cluster_info[1]]['media_info']
-        self.client_files[cluster_info[1]]['demuxed'] = self.demux(
-            old_file, media_info, self.encode_dir, dry_run=self.DRY_RUNS['demux'])
-        self.client_files[cluster_info[1]]['cleanup_files'].extend(
-            self.client_files[cluster_info[1]]['demuxed'])
-        #media_info['tracks'][i+1]   :   mux_files[i]
         
-        if len(media_info['id_maps']['Video']) > 1:
-            raise EnvironmentError('>1 Video Track Support Not Implemented') # <@todo #3
-        for vid_id in media_info['id_maps']['Video']:
-            self.client_files[cluster_info[1]]['waiting_transcode'] = vid_id-1 
-            cmd = {
-                'cmd'   :   'transcode', 
-                'old_file':old_file,
-                'new_file':os.path.join(
-                                    self.encode_dir,
-                                    u'%s.%s'%(os.path.basename(old_file),
-                                              self.TRANSCODE_SETTINGS['container'])
-                                ),
-                'media_info':media_info['tracks'][vid_id],
-                'new_settings':transcode_settings,
-                'dry_run':self.DRY_RUNS['transcode'],
-                'cluster_id': cluster_info[1],
-            }
-            logging.debug('Sending %s' % repr(cmd))
-            self.server.send_str(json.dumps(cmd),[cluster_info[0]])
-            return True #< @todo #3
-    
+        try:
+            self._client_file_cleanup(cluster_info[1])
+            self.client_files[cluster_info[1]] = { 'media_info': self.media_info(old_file),
+                                                    'new_file' : new_file,
+                                                    'cleanup_files':[old_file] }
+            media_info = self.client_files[cluster_info[1]]['media_info']
+            self.client_files[cluster_info[1]]['demuxed'] = self.demux(
+                old_file, media_info, self.encode_dir, dry_run=self.DRY_RUNS['demux'])
+            self.client_files[cluster_info[1]]['cleanup_files'].extend(
+                self.client_files[cluster_info[1]]['demuxed'])
+            #media_info['tracks'][i+1]   :   mux_files[i]
+            
+            if len(media_info['id_maps']['Video']) > 1:
+                raise EnvironmentError('>1 Video Track Support Not Implemented') # <@todo #3
+            for vid_id in media_info['id_maps']['Video']:
+                self.client_files[cluster_info[1]]['waiting_transcode'] = vid_id-1 
+                cmd = {
+                    'cmd'   :   'transcode', 
+                    'old_file':old_file,
+                    'new_file':os.path.join(
+                                        self.encode_dir,
+                                        u'%s.%s'%(os.path.basename(old_file),
+                                                  self.TRANSCODE_SETTINGS['container'])
+                                    ),
+                    'media_info':media_info['tracks'][vid_id],
+                    'new_settings':transcode_settings,
+                    'dry_run':self.DRY_RUNS['transcode'],
+                    'cluster_id': cluster_info[1],
+                }
+                logging.debug('Sending %s' % repr(cmd))
+                self.server.send_str(json.dumps(cmd),[cluster_info[0]])
+                return True #< @todo #3 
+        
+        except Exception as e:
+            logging.error(repr(e))
+            #   Implement #20
+            fh = open(self.log_file, 'a')
+            fh.write( repr(e) + ' - ' + repr(old_file) + ' - ' + repr(self.client_files) + "\n\n" ) 
+            fh.close()
+            os.rename(old_file, os.path.join(self.error_dir, os.path.basename(old_file)))
+            self.release_client(cluster_info[1])
+
     def _client_file_cleanup(self,cluster_id):
         leftovers = []
         try:
@@ -107,7 +123,7 @@ class encode_cluster_server(transcode):
             pass
         return True
     
-    def encode_directory(self,inpath=None):
+    def encode_directory(self, inpath=None):
         '''
             Encodes an entire directory...cluster style!
             self.SELF_THREADS for self too
