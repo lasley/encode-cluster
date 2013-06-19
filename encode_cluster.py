@@ -28,7 +28,7 @@ class encode_cluster_server(transcode):
 
     def transcode_done(self, output):
         logging.debug('Transcode_Done %s'%str(output))
-        self.release_client(output['cluster_id'])
+        
         client_files = self.client_files[output['cluster_id']]
         client_files['demuxed'][client_files['waiting_transcode']] = output['new_file']
         client_files['cleanup_files'].append(client_files['demuxed'][client_files['waiting_transcode']])
@@ -44,9 +44,6 @@ class encode_cluster_server(transcode):
                                        client_files['new_file'],duped,track_order,
                                        dry_run=self.DRY_RUNS['remux'])
             self.new_files.append(new_file)
-            
-            #   Delete leftover files
-            self._client_file_cleanup(output['cluster_id'])
             logging.debug('New File Success %s' % client_files['new_file'])
             
         except Exception as e:
@@ -57,7 +54,7 @@ class encode_cluster_server(transcode):
             fh.close()
             
         try:
-            self.client_threads[output['cluster_id']] = False
+            self.release_client(output['cluster_id'])
         except (IndexError, KeyError):
             logging.debug(repr(self.client_threads))
             logging.debug('Cluster %s not found in clusters %s' % (
@@ -186,7 +183,7 @@ class encode_cluster_server(transcode):
                                     child_took_it = True
                                     break
 
-                            time.sleep(int(not child_took_it))  #<   Wait a bit if no child picked it up
+                            time.sleep(1)  #<   Wait a bit
     
 
 class encode_cluster_client(transcode):
