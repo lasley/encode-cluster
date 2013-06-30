@@ -44,6 +44,7 @@ class encode_cluster_server(transcode):
                                        client_files['new_file'],duped,track_order,
                                        dry_run=self.DRY_RUNS['remux'])
             self.new_files.append(new_file)
+            client_files['cleanup_files'].append(client_files['old_file'])
             logging.debug('New File Success %s' % client_files['new_file'])
             
         except Exception as e:
@@ -66,9 +67,10 @@ class encode_cluster_server(transcode):
             self._client_file_cleanup(cluster_info[1])
             self.client_files[cluster_info[1]] = { 'media_info': self.media_info(old_file),
                                                     'new_file' : new_file,
-                                                    'cleanup_files':[old_file] }
+                                                    'old_file' : old_file,
+                                                    'cleanup_files':[] }
             media_info = self.client_files[cluster_info[1]]['media_info']
-            self.client_files[cluster_info[1]]['demuxed'] = self.demux(
+            self.client_files[cluster_info[1]]['demuxed'] = transcode.demux(
                 old_file, media_info, self.encode_dir, dry_run=self.DRY_RUNS['demux'])
             self.client_files[cluster_info[1]]['cleanup_files'].extend(
                 self.client_files[cluster_info[1]]['demuxed'])
