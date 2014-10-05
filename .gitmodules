@@ -1,0 +1,6 @@
+[submodule "batch_transcode"]
+	path = batch_transcode
+	url = https://github.com/dlasley/batch-transcode.git
+[submodule "custom_socket"]
+	path = custom_socket
+	url = https://github.com/dlasley/custom-socket.git
